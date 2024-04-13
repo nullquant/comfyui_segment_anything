@@ -5,6 +5,7 @@ NODE_CLASS_MAPPINGS = {
     'SAMModelLoader (segment anything)': SAMModelLoader,
     'GroundingDinoModelLoader (segment anything)': GroundingDinoModelLoader,
     'GroundingDinoSAMSegment (segment anything)': GroundingDinoSAMSegment,
+    'PointSAMSegment': PointSAMSegment,
     'InvertMask (segment anything)': InvertMask,
     "IsMaskEmpty": IsMaskEmptyNode,
 }

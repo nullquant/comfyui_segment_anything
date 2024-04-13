@@ -7,6 +7,7 @@ sys.path.append(
 import copy
 import torch
 import numpy as np
+import cv2
 from PIL import Image
 import logging
 from torch.hub import download_url_to_file
@@ -229,9 +230,10 @@ def split_image_mask(image):
 def sam_segment(
     sam_model,
     image,
+    points,
     boxes
 ):
-    if boxes.shape[0] == 0:
+    if len(points) == 0 and boxes is None:
         return None
     sam_is_hq = False
     # TODO: more elegant
@@ -241,16 +243,37 @@ def sam_segment(
     image_np = np.array(image)
     image_np_rgb = image_np[..., :3]
     predictor.set_image(image_np_rgb)
-    transformed_boxes = predictor.transform.apply_boxes_torch(
-        boxes, image_np.shape[:2])
-    sam_device = comfy.model_management.get_torch_device()
-    masks, _, _ = predictor.predict_torch(
-        point_coords=None,
-        point_labels=None,
-        boxes=transformed_boxes.to(sam_device),
-        multimask_output=False)
+
+    if len(points) == 0:
+        transformed_boxes = predictor.transform.apply_boxes_torch(
+            boxes, image_np.shape[:2])
+        sam_device = comfy.model_management.get_torch_device()
+        masks, _, _ = predictor.predict_torch(
+            point_coords=None,
+            point_labels=None,
+            boxes=transformed_boxes.to(sam_device),
+            multimask_output=False)
+    else:
+        if boxes.shape[0] == 0:
+            return None
+        sam_device = comfy.model_management.get_torch_device()
+        pc = torch.Tensor(points)
+        pl = torch.Tensor([[1] for x in points])
+        masks, _, _ = predictor.predict_torch(
+            point_coords=pc.to(sam_device),
+            point_labels=pl.to(sam_device),
+            boxes=None,
+            multimask_output=False)
+
     masks = masks.permute(1, 0, 2, 3).cpu().numpy()
     return create_tensor_output(image_np, masks, boxes)
+
+
+def image_from_tensor(t: torch.Tensor) -> np.ndarray:
+    image_np = t.numpy() 
+    # Convert the numpy array back to the original range (0-255) and data type (uint8)
+    image_np = (image_np * 255).astype(np.uint8)
+    return image_np
 
 
 class SAMModelLoader:
@@ -325,6 +348,7 @@ class GroundingDinoSAMSegment:
             (images, masks) = sam_segment(
                 sam_model,
                 item,
+                [],
                 boxes
             )
             res_images.extend(images)
@@ -334,6 +358,62 @@ class GroundingDinoSAMSegment:
             empty_mask = torch.zeros((1, height, width), dtype=torch.uint8, device="cpu")
             return (empty_mask, empty_mask)
         return (torch.cat(res_images, dim=0), torch.cat(res_masks, dim=0))
+
+
+class PointSAMSegment:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "sam_model": ('SAM_MODEL', {}),
+                "image": ('IMAGE', {}),
+                "mask": ('MASK', {}),
+                "threshold": ("FLOAT", {
+                    "default": 0.3,
+                    "min": 0,
+                    "max": 1.0,
+                    "step": 0.01
+                }),
+            }
+        }
+    CATEGORY = "segment_anything"
+    FUNCTION = "main"
+    RETURN_TYPES = ("IMAGE", "MASK")
+
+    def main(self, sam_model, image, mask, threshold):
+        res_images = []
+        res_masks = []
+        for item, msk in zip(image, mask):
+            item = Image.fromarray(
+                np.clip(255. * item.cpu().numpy(), 0, 255).astype(np.uint8)).convert('RGBA')
+            
+            mask_np = image_from_tensor(msk)
+            ret, thresh = cv2.threshold(mask_np, 127, 255, 0)
+            contours, hierarchy = cv2.findContours(thresh, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
+            points = []
+            for c in contours:
+                M = cv2.moments(c)
+                if M["m00"] != 0:
+                    cX = int(M["m10"] / M["m00"])
+                    cY = int(M["m01"] / M["m00"])
+                    points.append([[cX, cY]])
+
+            print(points)
+
+            (images, masks) = sam_segment(
+                sam_model,
+                item,
+                points,
+                None
+            )
+            res_images.extend(images)
+            res_masks.extend(masks)
+        if len(res_images) == 0:
+            _, height, width, _ = image.size()
+            empty_mask = torch.zeros((1, height, width), dtype=torch.uint8, device="cpu")
+            return (empty_mask, empty_mask)
+        return (torch.cat(res_images, dim=0), torch.cat(res_masks, dim=0))
+
 
 
 class InvertMask:
