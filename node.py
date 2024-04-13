@@ -254,8 +254,6 @@ def sam_segment(
             boxes=transformed_boxes.to(sam_device),
             multimask_output=False)
     else:
-        if boxes.shape[0] == 0:
-            return None
         sam_device = comfy.model_management.get_torch_device()
         pc = torch.Tensor(points)
         pl = torch.Tensor([[1] for x in points])
@@ -398,8 +396,8 @@ class PointSAMSegment:
                     cY = int(M["m01"] / M["m00"])
                     points.append([[cX, cY]])
 
-            print(points)
-
+            if len(points) == 0:
+                break
             (images, masks) = sam_segment(
                 sam_model,
                 item,
